@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pi-ble-config</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<header class="topbar">
+    <div class="topbar-brand">
+        <span class="logo-dot"></span>
+        <h1>pi-ble-config</h1>
+    </div>
+    <div class="topbar-actions">
+        <div class="conn-block">
+            <span id="conn-state" class="badge badge-off">disconnected</span>
+            <span id="conn-substate" class="conn-substate"></span>
+        </div>
+        <button id="btn-disconnect" class="ghost" disabled hidden>Disconnect</button>
+    </div>
+</header>
+
+<!-- Shown only while disconnected. Owns the primary call-to-action.
+     Outer section spans the page like the log section so widths line up;
+     inner column is narrower for readable line length. -->
+<section id="hero" class="hero">
+    <div class="hero-card">
+        <div class="hero-inner">
+
+            <div class="hero-icon">
+                <span class="hero-icon-dot"></span>
+            </div>
+
+            <h2 class="hero-title">Connect to your Raspberry&nbsp;Pi — without the hassle.</h2>
+
+            <p class="hero-sub">
+                Pair with a Pi running <code>pi-ble-config</code> over
+                Bluetooth and configure it from this page: pick a Wi-Fi
+                network, toggle SSH, check the device's IP — all without
+                plugging in a cable, sharing a network, or memorising an IP.
+            </p>
+            <p class="hero-sub hero-sub-soft">
+                No cloud, no account, no router setup. Just click the button.
+            </p>
+
+            <button id="btn-connect" class="primary hero-btn">
+                <span class="hero-btn-icon" aria-hidden="true">⛓</span>
+                Connect to Pi
+            </button>
+
+            <p id="hero-status" class="hero-status muted small"></p>
+
+            <ul class="hero-features" aria-label="What you can do">
+                <li>
+                    <span class="hero-feat-icon">📶</span>
+                    <span><strong>Scan &amp; join Wi-Fi</strong><br><span class="muted small">Pick from a live list, sorted by signal.</span></span>
+                </li>
+                <li>
+                    <span class="hero-feat-icon">🔐</span>
+                    <span><strong>Toggle SSH</strong><br><span class="muted small">Enable remote shell when you need it.</span></span>
+                </li>
+                <li>
+                    <span class="hero-feat-icon">🌐</span>
+                    <span><strong>See every interface</strong><br><span class="muted small">Ethernet, Wi-Fi, IP and link state — at a glance.</span></span>
+                </li>
+            </ul>
+
+            <details class="hero-help">
+                <summary>Pi not showing up?</summary>
+                <ul>
+                    <li>Make sure the agent is running on the Pi:
+                        <code>sudo systemctl status pi-ble-config</code>.</li>
+                    <li>Look for <code>PiCfg-&lt;hostname&gt;-&lt;XXXX&gt;</code>
+                        in the browser's BLE chooser.</li>
+                    <li>On Linux PCs running Chrome from Snap/Flatpak,
+                        Web Bluetooth is blocked — install Chrome from the
+                        official <code>.deb</code> instead.</li>
+                    <li>If <code>navigator.bluetooth</code> is missing,
+                        enable <em>Web Bluetooth</em> in
+                        <code>chrome://flags</code> and relaunch.</li>
+                </ul>
+            </details>
+
+        </div>
+    </div>
+</section>
+
+<main class="layout" id="layout">
+
+    <section class="card card-status" id="card-status">
+        <header class="card-header">
+            <h2>Status</h2>
+            <div class="row">
+                <span id="last-update" class="last-update muted small" title="Time since last notification from the Pi">—</span>
+                <button id="btn-refresh" class="ghost icon-btn" disabled title="Refresh now">
+                    <span aria-hidden="true">⟳</span>
+                </button>
+            </div>
+        </header>
+
+        <dl class="kv">
+            <dt>Device</dt>      <dd id="status-device">—</dd>
+            <dt>WiFi</dt>        <dd id="status-wifi">—</dd>
+            <dt>SSID</dt>        <dd id="status-ssid">—</dd>
+            <dt>Primary IP</dt>  <dd id="status-ip" class="mono">—</dd>
+            <dt>SSH</dt>         <dd id="status-ssh">—</dd>
+            <dt>Last result</dt> <dd id="status-result">—</dd>
+        </dl>
+
+        <h3 class="section-sub">Interfaces</h3>
+        <div class="ifaces-wrap">
+            <table id="ifaces-table" class="ifaces">
+                <thead>
+                    <tr>
+                        <th>Iface</th>
+                        <th>Type</th>
+                        <th>IP</th>
+                        <th>State</th>
+                    </tr>
+                </thead>
+                <tbody id="ifaces-tbody">
+                    <tr><td colspan="4" class="muted">—</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card card-ssh" id="card-ssh">
+        <header class="card-header">
+            <h2>SSH service</h2>
+        </header>
+        <div class="ssh-control">
+            <label class="switch">
+                <input type="checkbox" id="in-ssh" disabled>
+                <span class="slider"></span>
+            </label>
+            <div class="ssh-meta">
+                <div id="ssh-label" class="ssh-state">unknown</div>
+                <div class="muted small">Enable to allow remote shell access.</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="card card-wifi card-wide" id="card-wifi">
+        <header class="card-header">
+            <h2>WiFi networks</h2>
+            <div class="row">
+                <span id="scan-count" class="muted small">—</span>
+                <button id="btn-scan" class="primary" disabled>Scan</button>
+                <button id="btn-rescan" class="ghost" disabled title="Trigger a fresh scan and re-stream">Rescan</button>
+            </div>
+        </header>
+
+        <p class="muted small hint">
+            Click a network to enter its password and connect.
+        </p>
+
+        <ul id="wifi-list" class="wifi-list">
+            <li class="wifi-empty muted">Not scanned yet.</li>
+        </ul>
+
+        <details class="hidden-net">
+            <summary>
+                <span class="caret" aria-hidden="true">▸</span>
+                Connect to a hidden network
+            </summary>
+            <div class="hidden-net-body">
+                <p class="muted small">
+                    Hidden networks don't broadcast their SSID, so they never
+                    appear in a scan. Enter the name manually.
+                </p>
+                <button id="btn-add-hidden" class="ghost">Add hidden network…</button>
+            </div>
+        </details>
+    </section>
+
+</main>
+
+<!-- Log lives outside `<main>` so it stays visible whether or not we're
+     connected. It's the one thing that is useful in any state. -->
+<section class="log-section">
+    <div class="card card-log" id="card-log">
+        <header class="card-header">
+            <h2>Log</h2>
+            <div class="row">
+                <label class="muted small inline-label">
+                    level
+                    <select id="log-level">
+                        <option value="debug" selected>debug</option>
+                        <option value="info">info</option>
+                        <option value="warn">warn</option>
+                        <option value="error">error</option>
+                    </select>
+                </label>
+                <button id="btn-log-clear" class="ghost">Clear</button>
+                <button id="btn-log-save"  class="ghost">Download</button>
+            </div>
+        </header>
+        <div id="log-panel" class="log-panel" aria-live="polite"></div>
+    </div>
+</section>
+
+<!-- Password modal -->
+<div id="modal-overlay" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <header class="modal-header">
+            <h3 id="modal-title">Connect to network</h3>
+            <button id="modal-close" class="icon-btn" aria-label="Close">×</button>
+        </header>
+
+        <form id="modal-form" class="modal-body" autocomplete="off">
+            <label class="field" id="field-ssid">
+                <span class="field-label">Network name</span>
+                <input type="text" id="modal-ssid" required>
+            </label>
+
+            <p id="modal-meta" class="modal-meta muted small">—</p>
+
+            <label class="field">
+                <span class="field-label">Password</span>
+                <div class="pass-wrap">
+                    <input type="password" id="modal-pass" autocomplete="new-password" placeholder="Leave empty for open networks">
+                    <button type="button" id="modal-pass-toggle" class="pass-toggle" aria-label="Show password">show</button>
+                </div>
+            </label>
+
+            <label class="field-row" id="modal-hidden-row" hidden>
+                <input type="checkbox" id="modal-hidden">
+                <span>This is a hidden network</span>
+            </label>
+
+            <div id="modal-error" class="modal-error" hidden role="alert">
+                <span class="modal-error-icon" aria-hidden="true">⚠</span>
+                <div>
+                    <div class="modal-error-title">Couldn't connect</div>
+                    <div id="modal-error-msg" class="modal-error-msg"></div>
+                </div>
+            </div>
+
+            <footer class="modal-actions">
+                <button type="button" id="modal-cancel" class="ghost">Cancel</button>
+                <button type="submit" id="modal-submit" class="primary">Connect</button>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+[Unit]
+Description=BLE headless provisioning agent (WiFi, SSH, IP)
+After=bluetooth.service network.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+# Runs as root so it can talk to BlueZ on the system bus, drive nmcli,
+# and start/stop sshd. If you want least-privilege, see README for the
+# polkit rules needed to drop to a dedicated user.
+User=root
+ExecStart=/usr/local/bin/pi-ble-config -v
+Restart=on-failure
+RestartSec=3
+
+# Hardening that does not break our required capabilities.
+NoNewPrivileges=false
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
