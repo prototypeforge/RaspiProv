@@ -1,6 +1,34 @@
-# pi-ble-config
+# RaspiProv (`pi-ble-config`)
 
 Headless Raspberry Pi provisioning over Bluetooth Low Energy.
+
+Project home: <https://github.com/prototypeforge/RaspiProv>
+
+## Quick install (one-liner)
+
+On a freshly-flashed Pi with an internet connection, download the
+bootstrap script and run it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prototypeforge/RaspiProv/main/scripts/bootstrap.sh -o bootstrap.sh
+sudo bash bootstrap.sh
+```
+
+It will `apt-get install git`, clone the repo to `/opt/RaspiProv`, and
+run `scripts/install.sh` — building the package, installing the systemd
+unit, and starting the service. After it finishes, the Pi will advertise
+as `PiCfg-<hostname>-<MAC4>` and you can configure it from the web UI.
+
+Override the defaults with env vars if you need to:
+
+```bash
+sudo RASPIPROV_REF=v0.1.0 RASPIPROV_DIR=/srv/RaspiProv bash bootstrap.sh
+```
+
+For a manual / step-by-step install see [Install on a fresh
+Raspberry Pi](#install-on-a-fresh-raspberry-pi) below.
+
+---
 
 This repo has two halves:
 
@@ -136,7 +164,7 @@ Pick whichever fits your workflow.
 ```bash
 ssh pi@raspberrypi.local
 sudo apt-get install -y git
-git clone https://github.com/<you>/bluetoothProv ~/pi-ble-config
+git clone https://github.com/prototypeforge/RaspiProv ~/pi-ble-config
 ```
 
 **B. rsync from your PC** (best for iterating during development):
@@ -148,7 +176,7 @@ That script handles excludes, runs the install on the Pi, restarts the
 service, and tails the journal. The rest of this section is what
 `deploy.sh` automates.
 
-**C. USB stick / scp** — copy the whole `bluetoothProv/` directory to
+**C. USB stick / scp** — copy the whole `RaspiProv/` directory to
 `~/pi-ble-config` on the Pi.
 
 ### 4. Run the installer
