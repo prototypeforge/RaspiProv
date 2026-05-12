@@ -4,6 +4,14 @@ Headless Raspberry Pi provisioning over Bluetooth Low Energy.
 
 Project home: <https://github.com/prototypeforge/RaspiProv>
 
+## Public web app
+As maybe you don't have time to push that web app into your local machine? There is a public web app that you can use. It's exactly the same as you would deploy it yourself. 
+
+Just visit: 
+
+https://raspi.cxo.ninja
+
+
 ## Quick install (one-liner)
 
 On a freshly-flashed Pi with an internet connection, download the
