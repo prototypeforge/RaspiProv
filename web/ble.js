@@ -1,9 +1,34 @@
-// Web Bluetooth client for the pi_ble_config GATT service.
+// BLE client for the pi_ble_config GATT service.
 //
 // Mirrors the layout defined in pi_ble_config/protocol.py — keep the UUIDs
 // here in sync with that file. All operations are logged at debug/info
 // level via ./logger.js so the user can see exactly what is happening over
 // the air.
+//
+// The client talks to the radio through a small *transport* interface so
+// the same protocol code runs in two places:
+//
+//   * the browser, via Web Bluetooth  (WebBluetoothTransport, the default)
+//   * the Android app, via a native BLE plugin (see app/src/capacitor-transport.js)
+//
+// Transport contract (all async unless noted):
+//
+//   name                               string  — for logs ("web-bluetooth", ...)
+//   available                          boolean — can this transport work here at all?
+//   unavailableReason                  string  — human-readable, when !available
+//   warnings                           string[] — non-fatal environment caveats
+//   connected                          boolean (sync getter)
+//   requestDevice(serviceUuid)         → {id, name}   show the device picker
+//   connect(onDisconnected)            → void         GATT connect to the chosen device
+//   discover(serviceUuid, charUuids)   → Map<uuid, {read,write,writeWithoutResponse,notify,indicate}>
+//                                        throws if any characteristic is missing
+//   read(uuid)                         → Uint8Array
+//   write(uuid, bytes, {withResponse}) → void
+//   startNotifications(uuid, onBytes)  → void   at most once per characteristic
+//                                               per connection; PiBleClient fans out
+//   disconnect()                       → void   safe to call when not connected
+//
+// Transports never log payloads — PiBleClient does, so it can redact.
 
 import { log } from "./logger.js";
 
@@ -15,22 +40,159 @@ export const CHAR_SSH_UUID        = "6f3a0005-9a2b-4f3e-8d1c-1a2b3c4d5e6f";
 export const CHAR_IP_UUID         = "6f3a0006-9a2b-4f3e-8d1c-1a2b3c4d5e6f";
 export const CHAR_RESULT_UUID     = "6f3a0007-9a2b-4f3e-8d1c-1a2b3c4d5e6f";
 
+const ALL_CHAR_UUIDS = [
+    CHAR_WIFI_SCAN_UUID, CHAR_WIFI_CONNECT_UUID, CHAR_WIFI_STATUS_UUID,
+    CHAR_SSH_UUID, CHAR_IP_UUID, CHAR_RESULT_UUID,
+];
+
 const decoder = new TextDecoder("utf-8");
 const encoder = new TextEncoder();
 
 
-export class PiBleClient extends EventTarget {
+// ---------- Web Bluetooth transport (browser default) ---------- #
+
+export class WebBluetoothTransport {
     constructor() {
-        super();
+        this.name = "web-bluetooth";
         /** @type {BluetoothDevice|null} */ this.device = null;
         /** @type {BluetoothRemoteGATTServer|null} */ this.server = null;
         /** @type {BluetoothRemoteGATTService|null} */ this.service = null;
         /** @type {Map<string, BluetoothRemoteGATTCharacteristic>} */
         this.chars = new Map();
+        this._onDisconnected = null;
+    }
+
+    get available() {
+        return typeof navigator !== "undefined" && "bluetooth" in navigator;
+    }
+
+    get unavailableReason() {
+        return "Web Bluetooth not available. Use Chrome/Edge over HTTPS or localhost.";
+    }
+
+    get warnings() {
+        const w = [];
+        if (typeof window !== "undefined" && !window.isSecureContext) {
+            w.push("Insecure context — Web Bluetooth requires HTTPS or localhost");
+        }
+        return w;
     }
 
     get connected() {
         return !!(this.server && this.server.connected);
+    }
+
+    async requestDevice(serviceUuid) {
+        if (!this.available) throw new Error(this.unavailableReason);
+        const device = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [serviceUuid] }],
+            optionalServices: [serviceUuid],
+        });
+        device.addEventListener("gattserverdisconnected", () => {
+            log.warn("gattserverdisconnected");
+            if (this._onDisconnected) this._onDisconnected();
+        });
+        this.device = device;
+        return { id: device.id, name: device.name || "" };
+    }
+
+    async connect(onDisconnected) {
+        if (!this.device) throw new Error("no device chosen — call requestDevice() first");
+        this._onDisconnected = onDisconnected;
+        this.server = await this.device.gatt.connect();
+    }
+
+    async discover(serviceUuid, charUuids) {
+        this.service = await this.server.getPrimaryService(serviceUuid);
+        const found = new Map();
+        for (const uuid of charUuids) {
+            const ch = await this.service.getCharacteristic(uuid);   // throws if missing
+            this.chars.set(uuid, ch);
+            found.set(uuid, {
+                read:                 !!ch.properties.read,
+                write:                !!ch.properties.write,
+                writeWithoutResponse: !!ch.properties.writeWithoutResponse,
+                notify:               !!ch.properties.notify,
+                indicate:             !!ch.properties.indicate,
+            });
+        }
+        return found;
+    }
+
+    _char(uuid) {
+        const ch = this.chars.get(uuid);
+        if (!ch) throw new Error(`characteristic not available: ${uuid}`);
+        return ch;
+    }
+
+    async read(uuid) {
+        const view = await this._char(uuid).readValue();
+        return viewToBytes(view);
+    }
+
+    async write(uuid, bytes, { withResponse = true } = {}) {
+        const ch = this._char(uuid);
+        if (withResponse && ch.writeValueWithResponse) {
+            await ch.writeValueWithResponse(bytes);
+        } else if (!withResponse && ch.writeValueWithoutResponse) {
+            await ch.writeValueWithoutResponse(bytes);
+        } else {
+            // Older Web Bluetooth implementations.
+            await ch.writeValue(bytes);
+        }
+    }
+
+    async startNotifications(uuid, onBytes) {
+        const ch = this._char(uuid);
+        ch.addEventListener("characteristicvaluechanged", (ev) => {
+            onBytes(viewToBytes(ev.target.value));
+        });
+        await ch.startNotifications();
+    }
+
+    async disconnect() {
+        this.chars.clear();
+        this.service = null;
+        const server = this.server;
+        this.server = null;
+        try {
+            if (server && server.connected) server.disconnect();
+        } catch { /* already gone */ }
+    }
+}
+
+// The transport PiBleClient uses when none is passed to its constructor.
+// The Android app swaps this for its native transport *before* app.js
+// evaluates (see app/src/native-setup.js).
+let defaultTransportFactory = () => new WebBluetoothTransport();
+
+export function setDefaultTransport(factory) {
+    defaultTransportFactory = factory;
+}
+
+
+// ---------- protocol client ---------- #
+
+export class PiBleClient extends EventTarget {
+    constructor({ transport = null } = {}) {
+        super();
+        this.transport = transport || defaultTransportFactory();
+        /** @type {{id:string, name:string}|null} */ this.device = null;
+        /** @type {Map<string, object>} uuid -> characteristic properties */
+        this.chars = new Map();
+        /** @type {Map<string, Set<Function>>} uuid -> value listeners */
+        this._listeners = new Map();
+        /** @type {Set<string>} uuids with notifications already enabled */
+        this._notifying = new Set();
+    }
+
+    get available()         { return this.transport.available; }
+    get unavailableReason() { return this.transport.unavailableReason || ""; }
+    get warnings()          { return this.transport.warnings || []; }
+    get transportName()     { return this.transport.name; }
+
+    get connected() {
+        return !!this.transport.connected;
     }
 
     // ---------- connection lifecycle ---------- #
@@ -38,35 +200,25 @@ export class PiBleClient extends EventTarget {
     /**
      * Connect to a pi-ble-config device.
      *
-     * Strategy: open the browser chooser once (this NEEDS to happen on
-     * the user's click — browsers won't let us call requestDevice again
-     * without a fresh gesture). Then retry the actual GATT connect and
-     * service discovery up to ``maxAttempts`` times with a short
-     * backoff. Each attempt fires a ``connect-attempt`` event so the
-     * UI can render "trying X of N".
+     * Strategy: open the device chooser once (on the web this NEEDS to
+     * happen on the user's click — browsers won't let us call
+     * requestDevice again without a fresh gesture). Then retry the
+     * actual GATT connect and service discovery up to ``maxAttempts``
+     * times with a short backoff. Each attempt fires a
+     * ``connect-attempt`` event so the UI can render "trying X of N".
      */
     async connect({ maxAttempts = 5, backoffMs = 1500 } = {}) {
-        if (!("bluetooth" in navigator)) {
-            const err = new Error(
-                "Web Bluetooth not available. Use Chrome/Edge over HTTPS or localhost."
-            );
-            log.error("navigator.bluetooth missing", err);
+        if (!this.available) {
+            const err = new Error(this.unavailableReason);
+            log.error(`${this.transportName}: transport unavailable`, err);
             throw err;
         }
 
-        log.info("requesting device (will show browser chooser)");
+        log.info(`requesting device via ${this.transportName} (will show chooser)`);
         const t0 = performance.now();
-        const device = await navigator.bluetooth.requestDevice({
-            filters: [{ services: [SERVICE_UUID] }],
-            optionalServices: [SERVICE_UUID],
-        });
+        const device = await this.transport.requestDevice(SERVICE_UUID);
         log.info(`device chosen in ${(performance.now() - t0).toFixed(0)}ms`, {
             id: device.id, name: device.name,
-        });
-
-        device.addEventListener("gattserverdisconnected", () => {
-            log.warn("gattserverdisconnected");
-            this.dispatchEvent(new CustomEvent("disconnected"));
         });
         this.device = device;
 
@@ -77,7 +229,7 @@ export class PiBleClient extends EventTarget {
             }));
             log.info(`connect attempt ${attempt}/${maxAttempts}`);
             try {
-                await this._tryConnectOnce(device);
+                await this._tryConnectOnce();
                 this.dispatchEvent(new CustomEvent("connected", { detail: { device, attempts: attempt } }));
                 log.info(`connected on attempt ${attempt}/${maxAttempts}`);
                 return;
@@ -86,10 +238,7 @@ export class PiBleClient extends EventTarget {
                 log.warn(`attempt ${attempt}/${maxAttempts} failed`, err);
                 // Tear down any partial state before retrying so the
                 // next pass has a clean slate.
-                try { if (device.gatt && device.gatt.connected) device.gatt.disconnect(); } catch {}
-                this.chars.clear();
-                this.service = null;
-                this.server = null;
+                await this._reset();
                 if (attempt < maxAttempts) {
                     await new Promise(r => setTimeout(r, backoffMs));
                 }
@@ -100,56 +249,59 @@ export class PiBleClient extends EventTarget {
         );
     }
 
-    async _tryConnectOnce(device) {
+    async _tryConnectOnce() {
         log.debug("connecting GATT");
-        this.server = await device.gatt.connect();
+        await this.transport.connect(() => this._handleDisconnected());
         log.info("GATT connected");
 
-        log.debug("getPrimaryService", { uuid: SERVICE_UUID });
-        this.service = await this.server.getPrimaryService(SERVICE_UUID);
-
-        // Pre-cache each characteristic handle so later ops avoid the
-        // round-trip. Missing characteristics are logged but non-fatal —
-        // the firmware version may not yet expose them.
-        const uuids = [
-            CHAR_WIFI_SCAN_UUID, CHAR_WIFI_CONNECT_UUID, CHAR_WIFI_STATUS_UUID,
-            CHAR_SSH_UUID, CHAR_IP_UUID, CHAR_RESULT_UUID,
-        ];
-        for (const uuid of uuids) {
-            try {
-                const ch = await this.service.getCharacteristic(uuid);
-                this.chars.set(uuid, ch);
-                log.debug(`got characteristic ${shortUuid(uuid)}`, {
-                    properties: propSummary(ch.properties),
-                });
-            } catch (err) {
-                log.warn(`characteristic ${shortUuid(uuid)} missing`, err);
-                throw err;   // missing chars = bad connect; let retry handle it
-            }
+        // Discover the service and pre-cache each characteristic so
+        // later ops avoid the round-trip. A missing characteristic is
+        // a bad connect (firmware mismatch or truncated discovery) —
+        // the transport throws and the retry loop handles it.
+        log.debug("discover service", { uuid: SERVICE_UUID });
+        this.chars = await this.transport.discover(SERVICE_UUID, ALL_CHAR_UUIDS);
+        for (const [uuid, props] of this.chars) {
+            log.debug(`got characteristic ${shortUuid(uuid)}`, { properties: propSummary(props) });
         }
     }
 
+    _handleDisconnected() {
+        // Drop cached handles so a stray read/write after the link went
+        // away fails fast with a clear message instead of a transport
+        // error, and so a reconnect starts from a clean slate.
+        this._listeners.clear();
+        this._notifying.clear();
+        this.chars = new Map();
+        this.dispatchEvent(new CustomEvent("disconnected"));
+    }
+
+    async _reset() {
+        this._listeners.clear();
+        this._notifying.clear();
+        this.chars = new Map();
+        try { await this.transport.disconnect(); } catch { /* ignore */ }
+    }
+
     async disconnect() {
-        if (this.server && this.server.connected) {
+        if (this.connected) {
             log.info("disconnecting GATT");
-            this.server.disconnect();
         }
+        await this._reset();
     }
 
     // ---------- raw IO ---------- #
 
     _requireChar(uuid) {
-        const ch = this.chars.get(uuid);
-        if (!ch) throw new Error(`characteristic not available: ${uuid}`);
-        return ch;
+        const props = this.chars.get(uuid);
+        if (!props) throw new Error(`characteristic not available: ${uuid}`);
+        return props;
     }
 
     async readBytes(uuid) {
-        const ch = this._requireChar(uuid);
+        this._requireChar(uuid);
         log.debug(`read ${shortUuid(uuid)} -> requesting`);
         const t0 = performance.now();
-        const view = await ch.readValue();
-        const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+        const bytes = await this.transport.read(uuid);
         log.debug(
             `read ${shortUuid(uuid)} <- ${bytes.length}B in ${(performance.now() - t0).toFixed(0)}ms`,
             bytes,
@@ -158,18 +310,11 @@ export class PiBleClient extends EventTarget {
     }
 
     async writeBytes(uuid, data, { withResponse = true } = {}) {
-        const ch = this._requireChar(uuid);
+        this._requireChar(uuid);
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
         log.debug(`write ${shortUuid(uuid)} -> ${bytes.length}B (response=${withResponse})`, bytes);
         const t0 = performance.now();
-        if (withResponse && ch.writeValueWithResponse) {
-            await ch.writeValueWithResponse(bytes);
-        } else if (!withResponse && ch.writeValueWithoutResponse) {
-            await ch.writeValueWithoutResponse(bytes);
-        } else {
-            // Older Web Bluetooth implementations.
-            await ch.writeValue(bytes);
-        }
+        await this.transport.write(uuid, bytes, { withResponse });
         log.debug(`write ${shortUuid(uuid)} ok in ${(performance.now() - t0).toFixed(0)}ms`);
     }
 
@@ -200,24 +345,49 @@ export class PiBleClient extends EventTarget {
         await this.writeBytes(uuid, encoder.encode(JSON.stringify(obj)));
     }
 
+    /**
+     * Register ``onValue`` for notifications on ``uuid``. Several
+     * listeners per characteristic are fine; notifications are enabled
+     * on the link once and fanned out from here. Listeners are dropped
+     * automatically on disconnect.
+     */
     async subscribe(uuid, onValue) {
-        const ch = this._requireChar(uuid);
-        if (!ch.properties.notify && !ch.properties.indicate) {
+        const props = this._requireChar(uuid);
+        if (!props.notify && !props.indicate) {
             log.warn(`subscribe skipped, ${shortUuid(uuid)} has no notify property`);
             return;
         }
+        this._addListener(uuid, onValue);
+        await this._ensureNotifying(uuid);
+    }
+
+    unsubscribe(uuid, onValue) {
+        const set = this._listeners.get(uuid);
+        if (set) set.delete(onValue);
+    }
+
+    _addListener(uuid, fn) {
+        let set = this._listeners.get(uuid);
+        if (!set) { set = new Set(); this._listeners.set(uuid, set); }
+        set.add(fn);
+    }
+
+    async _ensureNotifying(uuid) {
+        if (this._notifying.has(uuid)) return;
         log.info(`subscribe ${shortUuid(uuid)}`);
-        ch.addEventListener("characteristicvaluechanged", (ev) => {
-            const view = ev.target.value;
-            const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+        await this.transport.startNotifications(uuid, (bytes) => {
             log.debug(`notify ${shortUuid(uuid)} <- ${bytes.length}B`, bytes);
-            try {
-                onValue(bytes);
-            } catch (err) {
-                log.error(`notify handler for ${shortUuid(uuid)} threw`, err);
+            // Snapshot: a handler may unsubscribe itself mid-iteration.
+            const fns = Array.from(this._listeners.get(uuid) || []);
+            for (const fn of fns) {
+                try {
+                    fn(bytes);
+                } catch (err) {
+                    log.error(`notify handler for ${shortUuid(uuid)} threw`, err);
+                }
             }
         });
-        await ch.startNotifications();
+        this._notifying.add(uuid);
     }
 
     // ---------- high-level domain helpers ---------- #
@@ -247,15 +417,13 @@ export class PiBleClient extends EventTarget {
      * rejects on err / timeout.
      */
     async streamWifi({ onBegin, onNetwork, onEnd, onError, timeoutMs = 20000 } = {}) {
-        const ch = this._requireChar(CHAR_WIFI_SCAN_UUID);
+        this._requireChar(CHAR_WIFI_SCAN_UUID);
 
         const networks = [];
         let resolve, reject;
         const done = new Promise((res, rej) => { resolve = res; reject = rej; });
 
-        const handler = (ev) => {
-            const view = ev.target.value;
-            const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+        const handler = (bytes) => {
             const text = decoder.decode(bytes);
             let frame;
             try { frame = JSON.parse(text); }
@@ -303,12 +471,12 @@ export class PiBleClient extends EventTarget {
 
         const cleanup = () => {
             clearTimeout(timer);
-            ch.removeEventListener("characteristicvaluechanged", handler);
+            this.unsubscribe(CHAR_WIFI_SCAN_UUID, handler);
         };
 
-        ch.addEventListener("characteristicvaluechanged", handler);
+        this._addListener(CHAR_WIFI_SCAN_UUID, handler);
         try {
-            await ch.startNotifications();
+            await this._ensureNotifying(CHAR_WIFI_SCAN_UUID);
         } catch (err) {
             cleanup();
             throw err;
@@ -325,9 +493,9 @@ export class PiBleClient extends EventTarget {
         // Bypasses the generic writeJson/writeBytes helpers on purpose:
         // those log the full payload, which would dump the password
         // into the on-page log panel (and the downloaded .log file).
-        // We log a redacted summary instead, then send the bytes
-        // directly to the characteristic.
-        const ch = this._requireChar(CHAR_WIFI_CONNECT_UUID);
+        // We log a redacted summary instead, then hand the bytes
+        // straight to the transport (which never logs payloads).
+        this._requireChar(CHAR_WIFI_CONNECT_UUID);
         const payload = JSON.stringify({
             ssid,
             password: password || "",
@@ -343,11 +511,7 @@ export class PiBleClient extends EventTarget {
         });
 
         const t0 = performance.now();
-        if (ch.writeValueWithResponse) {
-            await ch.writeValueWithResponse(bytes);
-        } else {
-            await ch.writeValue(bytes);
-        }
+        await this.transport.write(CHAR_WIFI_CONNECT_UUID, bytes, { withResponse: true });
         log.debug(
             `write ${shortUuid(CHAR_WIFI_CONNECT_UUID)} ${bytes.length}B in ${(performance.now() - t0).toFixed(0)}ms (contents redacted)`
         );
@@ -393,6 +557,12 @@ export class PiBleClient extends EventTarget {
 }
 
 // ---------- helpers ---------- #
+
+export function viewToBytes(view) {
+    // Copy out of the DataView: Web Bluetooth reuses the underlying
+    // buffer for the next notification on some platforms.
+    return new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+}
 
 function shortUuid(uuid) {
     // First 8 hex chars uniquely identify our chars; full UUIDs are noisy.

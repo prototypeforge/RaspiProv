@@ -11,7 +11,7 @@ just three JS modules and a stylesheet.
 | `index.html` | Page layout: status, WiFi list, join form, SSH switch, log.   |
 | `styles.css` | Dark theme, grid layout, log panel styling.                   |
 | `logger.js`  | In-page logger: timestamped, levelled, downloadable as `.log`.|
-| `ble.js`     | `PiBleClient` — Web Bluetooth wrapper for the Pi GATT service.|
+| `ble.js`     | `PiBleClient` — protocol client for the Pi GATT service, on top of a small transport interface (Web Bluetooth here; native BLE in the Android app). |
 | `app.js`     | UI orchestration — wires the DOM to `ble.js`.                 |
 
 ## Requirements
@@ -98,6 +98,12 @@ search there instead.
 
 The GATT UUIDs are duplicated between `ble.js` and the firmware's
 `pi_ble_config/protocol.py`. If you change one, change the other.
+
+The Android app in [`../app/`](../app/) bundles these same files, so UI
+or protocol changes here land in the app on its next build. The only
+thing it replaces is the transport (`WebBluetoothTransport` → native
+BLE); keep radio access behind the transport interface documented at the
+top of `ble.js` and both stay in sync.
 
 There is no bundler. Modules use native `<script type="module">` and ESM
 `import`. Browsers cache aggressively — hard-reload (`Ctrl+Shift+R`)

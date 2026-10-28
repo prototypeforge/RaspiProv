@@ -870,3 +870,10 @@ input[type=text]:focus, input[type=password]:focus {
     .topbar { padding: 0.7rem 1rem; }
     .topbar-brand h1 { font-size: 0.95rem; }
 }
+
+/* ---- host-specific bits ------------------------------------------------
+   The Android app (app/) adds `native-app` to <html>; everything else is
+   the plain browser page. */
+.native-only { display: none; }
+.native-app .native-only { display: list-item; }
+.native-app .web-only { display: none; }

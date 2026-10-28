@@ -12,6 +12,15 @@ Just visit:
 https://raspi.cxo.ninja
 
 
+## Android app (offline)
+
+The same client is also available as a native Android app. It uses the
+phone's Bluetooth radio directly and needs **no internet connection at
+all** — the app does not even hold the `INTERNET` permission. Build it
+yourself from [`app/`](./app/) (`npm ci && npm run apk`), or grab the
+APK produced by the *Android APK* GitHub Actions workflow. See
+[`app/README.md`](./app/README.md).
+
 ## Quick install (one-liner)
 
 On a freshly-flashed Pi with an internet connection, download the
@@ -44,10 +53,12 @@ This repo has two halves:
 |------------------|---------------------------------------------------------------|
 | `pi_ble_config/` | **Firmware / device-side** Python package that runs on the Pi |
 | `web/`           | **Client-side** static web page (Web Bluetooth) for your PC   |
+| `app/`           | **Android app** (Capacitor) wrapping `web/` with native BLE    |
 
 Either half can be replaced without touching the other — the contract
 between them is the GATT layout in [GATT layout](#gatt-layout), kept in
-sync between `pi_ble_config/protocol.py` and `web/ble.js`.
+sync between `pi_ble_config/protocol.py` and `web/ble.js`. The Android
+app reuses `web/` as-is and only swaps the BLE transport underneath it.
 
 A small Python service that runs on a Pi and exposes a custom GATT service
 over the built-in BLE radio. A phone (or any BLE central) can connect and:

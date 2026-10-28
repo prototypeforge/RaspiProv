@@ -75,21 +75,28 @@ const ui = {
 };
 
 
-// -------- Logger bootstrap -------- //
+// -------- BLE client + logger bootstrap -------- //
+
+// The client picks its transport at construction time: Web Bluetooth in
+// a browser, or the native BLE bridge when running inside the Android
+// app (which registers it before this module evaluates — see
+// app/src/native-setup.js).
+const client = new PiBleClient();
 
 log.attach(ui.logPanel);
 log.info("page loaded", {
     userAgent: navigator.userAgent,
-    webBluetooth: "bluetooth" in navigator,
+    transport: client.transportName,
+    bluetoothAvailable: client.available,
     secureContext: window.isSecureContext,
 });
 
-if (!("bluetooth" in navigator)) {
-    log.error("Web Bluetooth not available in this browser");
+if (!client.available) {
+    log.error(`Bluetooth not available: ${client.unavailableReason}`);
     ui.btnConnect.disabled = true;
-    ui.btnConnect.title = "Web Bluetooth not supported. Use Chrome or Edge.";
-} else if (!window.isSecureContext) {
-    log.warn("Insecure context — Web Bluetooth requires HTTPS or localhost");
+    ui.btnConnect.title = client.unavailableReason;
+} else {
+    for (const w of client.warnings) log.warn(w);
 }
 
 ui.logLevel.addEventListener("change", (e) => {
@@ -101,8 +108,6 @@ ui.btnLogSave.addEventListener("click", () => log.download());
 
 
 // -------- BLE client wiring -------- //
-
-const client = new PiBleClient();
 
 // Timestamp (ms) of the most recent notification of any kind — used to
 // power the "last update Xs ago" pill in the Status card header. Any
@@ -180,7 +185,7 @@ function displayDeviceName(device) {
     // Chrome didn't capture the LocalName during scan — fall back to a
     // short, *labelled* form of the opaque internal ID so the user
     // knows what they're looking at instead of seeing a random base64
-    // blob with no context.
+    // blob with no context. (On Android the id is the MAC address.)
     const shortId = (device.id || "").slice(0, 8);
     return `(no name; id ${shortId}…)`;
 }
@@ -624,7 +629,9 @@ function setConnectedUi(connected) {
     ui.btnDisc.hidden   = !connected;
     ui.btnDisc.disabled = !connected;
 
-    ui.btnConnect.disabled = false;
+    // Keep the CTA dead when there is no usable Bluetooth transport —
+    // otherwise a click just produces a confusing failed attempt.
+    ui.btnConnect.disabled = !client.available;
     ui.btnConnect.textContent = "Connect to Pi";
 
     ui.btnRefresh.disabled = !connected;

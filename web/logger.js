@@ -23,6 +23,8 @@ class Logger {
         this.minLevel = "debug";
         this.maxRendered = 2000;       // cap DOM growth
         this._mirror = true;
+        /** @type {null|((text:string, filename:string) => Promise<void>|void)} */
+        this.downloader = null;        // optional host override for download()
     }
 
     attach(panel) {
@@ -114,18 +116,31 @@ class Logger {
         if (this.panel) this.panel.innerHTML = "";
     }
 
-    download() {
+    /** The whole session as plain text, one entry per line. */
+    toText() {
         const lines = this.entries.map(e => {
             const base = `[${e.ts}] ${e.level.toUpperCase().padEnd(5)} ${e.msg}`;
             return e.extra !== undefined
                 ? base + " | " + formatExtra(e.extra).replace(/\n/g, " ")
                 : base;
         });
-        const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+        return lines.join("\n") + "\n";
+    }
+
+    download() {
+        const filename = `pi-ble-config-${Date.now()}.log`;
+        // Hosts without a working <a download> (the Android app's
+        // WebView) install their own handler, e.g. "write file + share".
+        if (this.downloader) {
+            Promise.resolve(this.downloader(this.toText(), filename))
+                .catch(err => this.error("log export failed", err));
+            return;
+        }
+        const blob = new Blob([this.toText()], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `pi-ble-config-${Date.now()}.log`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();

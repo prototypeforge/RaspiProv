@@ -85,13 +85,20 @@
                     <li>Make sure the agent is running on the Pi:
                         <code>sudo systemctl status pi-ble-config</code>.</li>
                     <li>Look for <code>PiCfg-&lt;hostname&gt;-&lt;XXXX&gt;</code>
-                        in the browser's BLE chooser.</li>
-                    <li>On Linux PCs running Chrome from Snap/Flatpak,
+                        in the device chooser.</li>
+                    <li class="web-only">On Linux PCs running Chrome from Snap/Flatpak,
                         Web Bluetooth is blocked — install Chrome from the
                         official <code>.deb</code> instead.</li>
-                    <li>If <code>navigator.bluetooth</code> is missing,
+                    <li class="web-only">If <code>navigator.bluetooth</code> is missing,
                         enable <em>Web Bluetooth</em> in
                         <code>chrome://flags</code> and relaunch.</li>
+                    <li class="native-only">Bluetooth must be switched on. On
+                        Android&nbsp;11 and older, <em>Location</em> must be on
+                        too — Android gates BLE scanning behind it.</li>
+                    <li class="native-only">Allow the <em>Nearby devices</em>
+                        (Android&nbsp;12+) or <em>Location</em> permission when
+                        asked; without it the chooser stays empty. You can fix
+                        a denied prompt in Android's app settings.</li>
                 </ul>
             </details>
 

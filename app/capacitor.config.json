@@ -1,0 +1,21 @@
+{
+  "appId": "ninja.cxo.raspiprov",
+  "appName": "RaspiProv",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Looking for your Pi…",
+        "cancel": "Cancel",
+        "availableDevices": "Raspberry Pis nearby",
+        "noDeviceFound": "No Pi found. Is pi-ble-config running and advertising?"
+      }
+    }
+  }
+}
